@@ -13,9 +13,11 @@ Example:
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 import pandas as pd
@@ -37,16 +39,81 @@ except ImportError as exc:
     ) from exc
 
 
+BENCHMARK_SYMBOL = "XU100.IS"
 DEFAULT_SYMBOLS = ["THYAO.IS", "TUPRS.IS", "FROTO.IS"]
 DEFAULT_FUNDAMENTAL_SCORES = {
-    "THYAO.IS": 0.72,
-    "TUPRS.IS": 0.45,
-    "FROTO.IS": 0.66,
+    "THYAO.IS": 0.90,
+    "TUPRS.IS": 0.30,
+    "FROTO.IS": 0.55,
+    "GARAN.IS": 0.82,
+    "AKBNK.IS": 0.68,
+    "ISCTR.IS": 0.61,
+    "MIATK.IS": 0.88,
+    "LOGO.IS": 0.57,
 }
 
 
 def normalize_symbol(symbol: str) -> str:
     return str(symbol or "").strip().upper()
+
+
+def load_sector_mappings(path: str = "data/sector_mappings.json") -> Dict[str, str]:
+    mapping_path = Path(path)
+    if mapping_path.exists():
+        with mapping_path.open("r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+        if not isinstance(raw, dict):
+            raise ValueError(f"{path} must contain a JSON object mapping symbols to sectors")
+        return {
+            normalize_symbol(symbol): str(sector or "Unknown").strip() or "Unknown"
+            for symbol, sector in raw.items()
+        }
+
+    return {
+        "THYAO.IS": "Industrials",
+        "TUPRS.IS": "Industrials",
+        "FROTO.IS": "Industrials",
+        "GARAN.IS": "Financials",
+        "AKBNK.IS": "Financials",
+        "ISCTR.IS": "Financials",
+        "MIATK.IS": "Tech",
+        "LOGO.IS": "Tech",
+    }
+
+
+def calculate_sector_relative_zscores(
+    raw_scores: Dict[str, float],
+    sector_mappings: Dict[str, str],
+) -> Dict[str, float]:
+    grouped: Dict[str, List[float]] = {}
+    clean_scores: Dict[str, float] = {}
+
+    for symbol, raw_score in raw_scores.items():
+        try:
+            score = float(raw_score)
+        except Exception:
+            continue
+        if not math.isfinite(score):
+            continue
+        normalized = normalize_symbol(symbol)
+        sector = sector_mappings.get(normalized, "Unknown")
+        clean_scores[normalized] = score
+        grouped.setdefault(sector, []).append(score)
+
+    sector_stats = {}
+    for sector, scores in grouped.items():
+        mean = sum(scores) / len(scores)
+        variance = sum((score - mean) ** 2 for score in scores) / len(scores)
+        std_dev = math.sqrt(variance)
+        sector_stats[sector] = {"mean": mean, "std_dev": std_dev}
+
+    zscores: Dict[str, float] = {}
+    for symbol, score in clean_scores.items():
+        sector = sector_mappings.get(symbol, "Unknown")
+        stats = sector_stats.get(sector, {"mean": score, "std_dev": 0.0})
+        std_dev = stats["std_dev"]
+        zscores[symbol] = (score - stats["mean"]) / std_dev if std_dev > 0 else 0.0
+    return zscores
 
 
 def download_price_data(symbol: str, start: datetime, end: datetime) -> Optional[pd.DataFrame]:
@@ -92,45 +159,93 @@ def download_price_data(symbol: str, start: datetime, end: datetime) -> Optional
     return df
 
 
+class DailyReturn(bt.Indicator):
+    lines = ("ret",)
+
+    def next(self):
+        prev_close = float(self.data[-1]) if len(self.data) > 1 else 0.0
+        cur_close = float(self.data[0])
+        self.lines.ret[0] = (cur_close / prev_close) - 1.0 if prev_close > 0 else 0.0
+
+
 class FiscographAlphaStrategy(bt.Strategy):
     params = dict(
         fast_ma=50,
         slow_ma=200,
-        take_profit=0.15,
-        stop_loss=0.05,
+        atr_period=14,
+        atr_multiplier=2.5,
+        volatility_period=20,
+        trading_days=252,
+        target_portfolio_risk=0.02,
+        min_position_weight=0.05,
+        max_position_weight=0.15,
         fundamental_scores=None,
-        min_fundamental_score=0.0,
-        target_weight=0.30,
+        fundamental_zscores=None,
+        min_sector_zscore=1.0,
         printlog=False,
     )
 
     def __init__(self):
         self.fast_ma = {}
         self.slow_ma = {}
+        self.atr = {}
+        self.daily_returns = {}
+        self.annualized_volatility = {}
         self.crossovers = {}
         self.entry_price = {}
+        self.highest_price = {}
         self.closed_trades = []
         self.fundamental_scores = self.p.fundamental_scores or {}
+        self.fundamental_zscores = self.p.fundamental_zscores or {}
+        self.benchmark_data = self.datas[0]
+        self.stock_datas = list(self.datas[1:])
+        self.benchmark_sma = bt.indicators.SimpleMovingAverage(self.benchmark_data.close, period=self.p.slow_ma)
 
-        for data in self.datas:
+        for data in self.stock_datas:
             self.fast_ma[data] = bt.indicators.SimpleMovingAverage(data.close, period=self.p.fast_ma)
             self.slow_ma[data] = bt.indicators.SimpleMovingAverage(data.close, period=self.p.slow_ma)
+            self.atr[data] = bt.indicators.ATR(data, period=self.p.atr_period)
+            self.daily_returns[data] = DailyReturn(data.close)
+            self.annualized_volatility[data] = (
+                bt.indicators.StandardDeviation(self.daily_returns[data], period=self.p.volatility_period)
+                * math.sqrt(float(self.p.trading_days))
+            )
             self.crossovers[data] = bt.indicators.CrossOver(self.fast_ma[data], self.slow_ma[data])
             self.entry_price[data] = None
+            self.highest_price[data] = None
 
     def log(self, message: str):
         if self.p.printlog:
             dt = self.datas[0].datetime.date(0).isoformat()
             print(f"{dt} {message}")
 
-    def fundamental_score(self, data) -> float:
+    def sector_zscore(self, data) -> float:
         symbol = normalize_symbol(data._name)
-        raw = self.fundamental_scores.get(symbol, self.fundamental_scores.get(data._name, 0.0))
+        raw = self.fundamental_zscores.get(symbol, self.fundamental_zscores.get(data._name, 0.0))
         try:
-            score = float(raw)
-            return score if math.isfinite(score) else 0.0
+            zscore = float(raw)
+            return zscore if math.isfinite(zscore) else 0.0
         except Exception:
             return 0.0
+
+    def inverse_volatility_position_size(self, data, close: float) -> int:
+        annualized_vol = float(self.annualized_volatility[data][0])
+        if not math.isfinite(annualized_vol) or annualized_vol <= 0 or close <= 0:
+            return 0
+
+        raw_weight = float(self.p.target_portfolio_risk) / annualized_vol
+        position_weight = min(
+            float(self.p.max_position_weight),
+            max(float(self.p.min_position_weight), raw_weight),
+        )
+        target_value = min(self.broker.getcash(), self.broker.getvalue() * position_weight)
+        size = int(target_value / close)
+        if size > 0:
+            self.log(
+                f"POSITION_SIZE {data._name} vol={annualized_vol:.2%} "
+                f"weight={position_weight:.2%} value={target_value:.2f} size={size}"
+            )
+        return size
 
     def notify_order(self, order):
         if order.status in [order.Submitted, order.Accepted]:
@@ -140,11 +255,13 @@ class FiscographAlphaStrategy(bt.Strategy):
         if order.status == order.Completed:
             if order.isbuy():
                 self.entry_price[order.data] = float(order.executed.price)
+                self.highest_price[order.data] = float(order.executed.price)
                 self.log(f"BUY {symbol} price={order.executed.price:.2f} size={order.executed.size:.0f}")
             else:
                 self.log(f"SELL {symbol} price={order.executed.price:.2f} size={order.executed.size:.0f}")
                 if self.getposition(order.data).size == 0:
                     self.entry_price[order.data] = None
+                    self.highest_price[order.data] = None
         elif order.status in [order.Canceled, order.Margin, order.Rejected]:
             self.log(f"ORDER_FAILED {symbol} status={order.getstatusname()}")
 
@@ -155,41 +272,49 @@ class FiscographAlphaStrategy(bt.Strategy):
         self.log(f"TRADE_CLOSED {trade.data._name} pnl={trade.pnlcomm:.2f}")
 
     def next(self):
-        for data in self.datas:
+        index_close = float(self.benchmark_data.close[0])
+        index_sma = float(self.benchmark_sma[0])
+        is_bull_market = math.isfinite(index_close) and math.isfinite(index_sma) and index_close > index_sma
+
+        for data in self.stock_datas:
             symbol = data._name
             position = self.getposition(data)
             close = float(data.close[0])
 
             if position.size:
-                entry = self.entry_price.get(data) or float(position.price)
-                if entry > 0:
-                    pnl_pct = (close / entry) - 1.0
-                    if pnl_pct >= self.p.take_profit:
-                        self.log(f"TAKE_PROFIT {symbol} pnl_pct={pnl_pct:.2%}")
-                        self.close(data=data)
-                        continue
-                    if pnl_pct <= -self.p.stop_loss:
-                        self.log(f"STOP_LOSS {symbol} pnl_pct={pnl_pct:.2%}")
+                previous_high = self.highest_price.get(data)
+                self.highest_price[data] = max(previous_high or close, close)
+
+                atr_value = float(self.atr[data][0])
+                if math.isfinite(atr_value) and atr_value > 0:
+                    trailing_stop_price = self.highest_price[data] - (atr_value * float(self.p.atr_multiplier))
+                    if close <= trailing_stop_price:
+                        self.log(
+                            f"ATR_TRAILING_STOP {symbol} close={close:.2f} "
+                            f"stop={trailing_stop_price:.2f} high={self.highest_price[data]:.2f} atr={atr_value:.2f}"
+                        )
                         self.close(data=data)
                         continue
 
             if position.size:
                 continue
 
-            score = self.fundamental_score(data)
-            if self.crossovers[data][0] > 0 and score > self.p.min_fundamental_score:
-                cash = self.broker.getcash()
-                portfolio_value = self.broker.getvalue()
-                target_value = min(cash, portfolio_value * float(self.p.target_weight))
-                size = int(target_value / close)
+            if not is_bull_market:
+                continue
+
+            zscore = self.sector_zscore(data)
+            if self.crossovers[data][0] > 0 and zscore > self.p.min_sector_zscore:
+                size = self.inverse_volatility_position_size(data, close)
                 if size > 0:
-                    self.log(f"BUY_SIGNAL {symbol} score={score:.2f}")
+                    self.log(f"BUY_SIGNAL {symbol} sector_zscore={zscore:.2f}")
                     self.buy(data=data, size=size)
 
 
 def build_cerebro(
+    benchmark_data: pd.DataFrame,
     price_data: Dict[str, pd.DataFrame],
     fundamental_scores: Dict[str, float],
+    fundamental_zscores: Dict[str, float],
     initial_cash: float,
     commission: float,
     printlog: bool,
@@ -197,6 +322,17 @@ def build_cerebro(
     cerebro = bt.Cerebro(stdstats=False)
     cerebro.broker.setcash(float(initial_cash))
     cerebro.broker.setcommission(commission=float(commission))
+
+    benchmark_feed = bt.feeds.PandasData(
+        dataname=benchmark_data,
+        open="open",
+        high="high",
+        low="low",
+        close="close",
+        volume="volume",
+        openinterest=None,
+    )
+    cerebro.adddata(benchmark_feed, name=BENCHMARK_SYMBOL)
 
     for symbol, df in price_data.items():
         feed = bt.feeds.PandasData(
@@ -213,6 +349,7 @@ def build_cerebro(
     cerebro.addstrategy(
         FiscographAlphaStrategy,
         fundamental_scores=fundamental_scores,
+        fundamental_zscores=fundamental_zscores,
         printlog=printlog,
     )
     cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
@@ -235,8 +372,18 @@ def run_backtest(args: argparse.Namespace) -> int:
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=int(args.years * 365.25) + 30)
 
+    try:
+        benchmark_data = download_price_data(BENCHMARK_SYMBOL, start=start, end=end)
+    except Exception as exc:
+        raise SystemExit(f"Benchmark download failed for {BENCHMARK_SYMBOL}: {exc}") from exc
+    if benchmark_data is None or benchmark_data.empty:
+        raise SystemExit(f"Benchmark download returned no usable data for {BENCHMARK_SYMBOL}.")
+    print(f"[DATA] {BENCHMARK_SYMBOL}: {len(benchmark_data)} bars benchmark")
+
     price_data: Dict[str, pd.DataFrame] = {}
     for symbol in symbols:
+        if symbol == BENCHMARK_SYMBOL:
+            continue
         try:
             df = download_price_data(symbol, start=start, end=end)
             if df is not None and not df.empty:
@@ -252,10 +399,23 @@ def run_backtest(args: argparse.Namespace) -> int:
         symbol: DEFAULT_FUNDAMENTAL_SCORES.get(symbol, 0.50)
         for symbol in price_data
     }
+    sector_mappings = load_sector_mappings()
+    fundamental_zscores = calculate_sector_relative_zscores(
+        raw_scores=fundamental_scores,
+        sector_mappings=sector_mappings,
+    )
+    for symbol in sorted(fundamental_zscores):
+        sector = sector_mappings.get(symbol, "Unknown")
+        print(
+            f"[FACTOR] {symbol}: sector={sector} "
+            f"raw={fundamental_scores[symbol]:.2f} z={fundamental_zscores[symbol]:.2f}"
+        )
 
     cerebro = build_cerebro(
+        benchmark_data=benchmark_data,
         price_data=price_data,
         fundamental_scores=fundamental_scores,
+        fundamental_zscores=fundamental_zscores,
         initial_cash=args.cash,
         commission=args.commission,
         printlog=args.printlog,
