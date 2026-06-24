@@ -1,0 +1,29 @@
+{
+  "generatedAt": "2026-03-18T16:07:32.123Z",
+  "generatedAtMs": 1773850052124,
+  "source": "local_runtime_cache",
+  "symbolCount": 1,
+  "data": {
+    "THYAO": {
+      "symbol": "THYAO.IS",
+      "shortName": "THYAO.IS",
+      "regularMarketPrice": 290.75,
+      "regularMarketPreviousClose": 294.75,
+      "regularMarketChange": -4,
+      "regularMarketChangePercent": -1.3570822731128074,
+      "regularMarketOpen": null,
+      "regularMarketDayHigh": 298,
+      "regularMarketDayLow": 289.25,
+      "regularMarketTime": 1773846599000,
+      "regularMarketVolume": 24386487,
+      "averageVolume": 27956381.333333332,
+      "marketCap": null,
+      "trailingPE": null,
+      "priceToBook": null,
+      "trailingEps": null,
+      "dividendYield": null,
+      "beta": null,
+      "ts": 1773850052123
+    }
+  }
+}

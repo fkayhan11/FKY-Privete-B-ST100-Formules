@@ -1390,6 +1390,14 @@ function fmtTickTime(ms){
   if(!Number.isFinite(ms))return '—';
   return new Date(ms).toLocaleTimeString('tr-TR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }
+function fetchWithTimeout(url, timeoutMs, options = {}){
+  if(typeof AbortSignal!=='undefined' && typeof AbortSignal.timeout==='function'){
+    return fetch(url,{...options,signal:AbortSignal.timeout(timeoutMs)});
+  }
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),Math.max(1,Number(timeoutMs)||1));
+  return fetch(url,{...options,signal:controller.signal}).finally(()=>clearTimeout(timer));
+}
 function buildTopBar(){
   const el=document.getElementById('tbMarket');
   el.innerHTML=MKT_DEF.map(m=>{
@@ -1407,7 +1415,7 @@ function buildTopBar(){
 }
 async function loadMacroOfficial(){
   try{
-    const r=await fetch('/api/macro-official',{signal:AbortSignal.timeout(30000)});
+    const r=await fetchWithTimeout('/api/macro-official',30000);
     if(!r.ok)return;
     const j=await r.json();
     if(j?.grades)S.macroOfficial=j;
@@ -1415,7 +1423,7 @@ async function loadMacroOfficial(){
 }
 async function loadFundHealth(){
   try{
-    const r=await fetch('/api/fundamentals-health',{signal:AbortSignal.timeout(30000)});
+    const r=await fetchWithTimeout('/api/fundamentals-health',30000);
     if(!r.ok)return;
     const j=await r.json();
     if(j&&typeof j==='object')S.fundHealth=j;
@@ -1424,7 +1432,7 @@ async function loadFundHealth(){
 }
 async function loadTopBar(){
   try{
-    const r=await fetch('/api/market-overview',{signal:AbortSignal.timeout(30000)});
+    const r=await fetchWithTimeout('/api/market-overview',30000);
     if(!r.ok)return;
     const raw=await r.json();
     Object.assign(MKT_DATA,raw?.data||{});
@@ -1543,6 +1551,9 @@ function renderNewsList() {
 fetchRssItems();
 setInterval(fetchRssItems, 60_000);
 
+// İlk açılışta liste iskeletini hemen göster.
+renderList();
+
 // Sayfa açılır açılmaz arka planda sessizce yükle
 fetchAll(true);
 
@@ -1571,7 +1582,7 @@ async function fetchBatch(tickers){
   const syms=tickers.map(t=>t+'.IS').join(',');
   const modeQ=S.metricMode?`&metricMode=${encodeURIComponent(S.metricMode)}`:'';
   try{
-    const r=await fetch(`/api/quotes?symbols=${encodeURIComponent(syms)}${modeQ}`,{signal:AbortSignal.timeout(300000)});
+    const r=await fetchWithTimeout(`/api/quotes?symbols=${encodeURIComponent(syms)}${modeQ}`,300000);
     if(!r.ok){
       let msg=`HTTP ${r.status}`;
       try{
@@ -1585,7 +1596,10 @@ async function fetchBatch(tickers){
     if(raw?.metricMode)S.activeMetricMode=raw.metricMode;
     if((raw?.quoteCount||0)===0 && (raw?.failedCount||0)>0){
       const firstFail=raw?.failures?.[0]?.reason;
-      S.lastFetchError=firstFail||'Yahoo veri çekimi başarısız';
+      S.lastFetchError=
+        firstFail==='price_unavailable_yahoo_tv' || firstFail==='price_unavailable_yahoo_tv_snapshot'
+          ? 'Canlı fiyat kaynaklarına erişilemiyor (Yahoo + TradingView)'
+          : (firstFail||'Yahoo veri çekimi başarısız');
       return {data:{},failedCount:raw?.failedCount||tickers.length};
     }
     S.lastFetchError='';
@@ -1635,6 +1649,20 @@ async function fetchAll(silent=false){
     document.getElementById('ovFill').style.width=pct+'%';
     document.getElementById('ovStatus').textContent=`YÜKLENİYOR — %${pct}`;
     document.getElementById('ovCnt').textContent=`${done} / ${ticks.length} hisse`;
+    setLed('busy',`${done}/${ticks.length} hisse yükleniyor…`);
+
+    // Sessiz başlangıçta bile kullanıcıya veri akışını hemen göster.
+    const loadedNow=Object.keys(S.data).length;
+    if(loadedNow>0){
+      if(!S.sel){
+        const firstLoaded=STOCKS.find(x=>S.data[x.t]);
+        if(firstLoaded)S.sel=firstLoaded.t;
+      }
+      buildScroll();
+      renderList();
+      if(S.sel)renderDetail(S.sel);
+    }
+
     if(i+BS<ticks.length)await sleep(200);
   }
 
@@ -1650,8 +1678,10 @@ async function fetchAll(silent=false){
   const loaded=Object.keys(S.data).length;
   if(loaded===0){
     const reason=S.lastFetchError?`Sebep: ${S.lastFetchError}`:'Sebep: bilinmiyor';
-    if(!silent) toast(`Canlı veri alınamadı (backend/Yahoo). ${reason}`,'warn');
+    toast(`Canlı veri alınamadı (backend/Yahoo). ${reason}`,'warn');
     setLed('off','Bağlantı hatası');
+    // Tamamen boş ekran yerine kontrollü demo verisi göster.
+    loadDemo();
     return;
   }
   S.demo=false;
@@ -3353,6 +3383,11 @@ function toast(msg,type=''){
   rack.appendChild(el);
   requestAnimationFrame(()=>requestAnimationFrame(()=>el.classList.add('show')));
   setTimeout(()=>{el.classList.remove('show');setTimeout(()=>el.remove(),350)},4500);
+}
+
+if(window.location.protocol==='file:'){
+  setLed('off','Sunucu gerekli');
+  toast('Bu arayüzü dosya olarak açmayın. Proje klasöründe `npm start` çalıştırıp http://127.0.0.1:3000 üzerinden açın.','warn');
 }
 </script>
 </body>

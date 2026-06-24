@@ -35,6 +35,11 @@ const SESSION_COOKIE = "fky_session";
 const SESSION_MAX_AGE = 8 * 60 * 60; // 8 saat (saniye)
 const IS_PRODUCTION  = process.env.NODE_ENV === "production" || Boolean(process.env.VERCEL);
 const AUTH_PUBLIC    = new Set(["/auth/login", "/auth/logout"]);
+const AUTH_RATE_LIMIT_WINDOW_MS = Math.max(30_000, toNum(process.env.AUTH_RATE_LIMIT_WINDOW_MS) || 10 * 60 * 1000);
+const AUTH_RATE_LIMIT_MAX_FAILS = Math.max(1, Math.floor(toNum(process.env.AUTH_RATE_LIMIT_MAX_FAILS) || 6));
+const AUTH_RATE_LIMIT_BLOCK_MS = Math.max(10_000, toNum(process.env.AUTH_RATE_LIMIT_BLOCK_MS) || 15 * 60 * 1000);
+const AUTH_RATE_LIMIT_MAX_KEYS = Math.max(100, Math.floor(toNum(process.env.AUTH_RATE_LIMIT_MAX_KEYS) || 20_000));
+const authLoginRate = new Map();
 
 function parseCookies(req) {
   const out = {};
@@ -43,7 +48,14 @@ function parseCookies(req) {
     const idx = part.indexOf("=");
     if (idx < 0) continue;
     const k = part.slice(0, idx).trim();
-    const v = decodeURIComponent(part.slice(idx + 1).trim());
+    const rawVal = part.slice(idx + 1).trim();
+    let v = rawVal;
+    try {
+      v = decodeURIComponent(rawVal);
+    } catch {
+      // Keep raw cookie value when malformed encoding is supplied.
+      v = rawVal;
+    }
     out[k] = v;
   }
   return out;
@@ -80,6 +92,70 @@ function buildSessionCookie(token) {
 
 function clearSessionCookie() {
   return `${SESSION_COOKIE}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax`;
+}
+
+function getClientIp(req) {
+  const xff = String(req.headers["x-forwarded-for"] || "")
+    .split(",")[0]
+    .trim();
+  const ip = xff || req.ip || req.socket?.remoteAddress || "unknown";
+  return String(ip).trim().toLowerCase();
+}
+
+function authRateKey(req) {
+  return getClientIp(req);
+}
+
+function pruneAuthLoginRate(now = Date.now()) {
+  const maxAge = Math.max(AUTH_RATE_LIMIT_BLOCK_MS, AUTH_RATE_LIMIT_WINDOW_MS) * 2;
+  if (authLoginRate.size <= AUTH_RATE_LIMIT_MAX_KEYS) {
+    for (const [key, row] of authLoginRate.entries()) {
+      if (!row || now - (row.lastTs || 0) > maxAge) authLoginRate.delete(key);
+    }
+    return;
+  }
+  const rows = [...authLoginRate.entries()].sort((a, b) => (a[1]?.lastTs || 0) - (b[1]?.lastTs || 0));
+  const removeN = Math.max(0, rows.length - AUTH_RATE_LIMIT_MAX_KEYS);
+  for (let i = 0; i < removeN; i++) authLoginRate.delete(rows[i][0]);
+}
+
+function getAuthRateInfo(req) {
+  const key = authRateKey(req);
+  const now = Date.now();
+  pruneAuthLoginRate(now);
+  const row = authLoginRate.get(key);
+  if (!row) return { key, blocked: false, retryAfterSec: 0 };
+  const blockedUntil = toNum(row.blockedUntil) || 0;
+  if (blockedUntil > now) {
+    return { key, blocked: true, retryAfterSec: Math.max(1, Math.ceil((blockedUntil - now) / 1000)) };
+  }
+  return { key, blocked: false, retryAfterSec: 0 };
+}
+
+function recordAuthLoginFailure(key) {
+  const now = Date.now();
+  const row = authLoginRate.get(key) || {
+    failCount: 0,
+    windowStart: now,
+    blockedUntil: 0,
+    lastTs: now,
+  };
+  if (now - (toNum(row.windowStart) || now) > AUTH_RATE_LIMIT_WINDOW_MS) {
+    row.failCount = 0;
+    row.windowStart = now;
+  }
+  row.failCount = (toNum(row.failCount) || 0) + 1;
+  row.lastTs = now;
+  if (row.failCount >= AUTH_RATE_LIMIT_MAX_FAILS) {
+    row.blockedUntil = now + AUTH_RATE_LIMIT_BLOCK_MS;
+    row.failCount = 0;
+    row.windowStart = now;
+  }
+  authLoginRate.set(key, row);
+}
+
+function clearAuthLoginFailures(key) {
+  authLoginRate.delete(key);
 }
 
 function escapeHtml(str) {
@@ -168,8 +244,8 @@ const PRICE_CACHE_MS = 60_000;
 const FUND_CACHE_MS = 36 * 60 * 60 * 1000;
 const BETA_CACHE_MS = 24 * 60 * 60 * 1000;
 const SERIES_CACHE_MS = 6 * 60 * 60 * 1000;
-const REQUEST_INTERVAL_MS = 450;
-const REQUEST_TIMEOUT_MS = 15_000;
+const REQUEST_INTERVAL_MS = Math.max(50, toNum(process.env.REQUEST_INTERVAL_MS) || 300);
+const REQUEST_TIMEOUT_MS = Math.max(1_000, toNum(process.env.REQUEST_TIMEOUT_MS) || 15_000);
 const SYMBOL_REGEX = /^[A-Z0-9.]{1,15}$/;
 const BETA_BENCHMARK_SYMBOL = "XU100.IS";
 const FUND_SOURCE = String(process.env.FUND_SOURCE || "snapshot").toLowerCase();
@@ -179,6 +255,10 @@ const FUND_SNAPSHOT_PATH = path.join(__dirname, "data", "fundamentals_snapshot.j
 const FUND_SNAPSHOT_RELOAD_MS = 15_000;
 const DIVIDEND_SNAPSHOT_PATH = path.join(__dirname, "data", "dividend_snapshot.json");
 const DIVIDEND_SNAPSHOT_RELOAD_MS = 20_000;
+const PRICE_LOCAL_SNAPSHOT_PATH = path.join(__dirname, "data", "prices_snapshot.json");
+const PRICE_ALLOW_LOCAL_SNAPSHOT_FALLBACK = String(process.env.PRICE_ALLOW_LOCAL_SNAPSHOT_FALLBACK || "1") !== "0";
+const PRICE_SNAPSHOT_RELOAD_MS = Math.max(2_000, toNum(process.env.PRICE_SNAPSHOT_RELOAD_MS) || 15_000);
+const PRICE_SNAPSHOT_PERSIST_MS = Math.max(500, toNum(process.env.PRICE_SNAPSHOT_PERSIST_MS) || 2_000);
 const FRED_API_KEY = String(process.env.FRED_API_KEY || "").trim();
 const EVDS_API_KEY = String(process.env.EVDS_API_KEY || "").trim();
 const EVDS_SERIES_USDTRY = String(process.env.EVDS_SERIES_USDTRY || "TP.DK.USD.S.YTL").trim();
@@ -189,6 +269,27 @@ const EVDS_SERIES_UNEMP = String(process.env.EVDS_SERIES_UNEMP || "").trim();
 const FUND_METRIC_MODES = ["kap_truth", "tv_parity"];
 const FUND_METRIC_MODE_DEFAULT = normalizeFundMetricMode(process.env.FUND_METRIC_MODE || "kap_truth");
 const TV_SCANNER_URL = "https://scanner.tradingview.com/turkey/scan";
+const PRICE_ALLOW_TV_FALLBACK = String(process.env.PRICE_ALLOW_TV_FALLBACK || "1") !== "0";
+const PRICE_ALLOW_SNAPSHOT_ESTIMATE = String(process.env.PRICE_ALLOW_SNAPSHOT_ESTIMATE || "1") !== "0";
+const PRICE_PROVIDER_COOLDOWN_MS = Math.max(10_000, toNum(process.env.PRICE_PROVIDER_COOLDOWN_MS) || 2 * 60 * 1000);
+const PRICE_FORCE_LOCAL_SNAPSHOT = String(process.env.PRICE_FORCE_LOCAL_SNAPSHOT || "0") === "1";
+const TV_PRICE_CACHE_MS = Math.max(20_000, toNum(process.env.TV_PRICE_CACHE_MS) || 90_000);
+const TV_PRICE_CHUNK_SIZE = Math.max(5, toNum(process.env.TV_PRICE_CHUNK_SIZE) || 50);
+const TV_PRICE_COLUMNS = [
+  "name",
+  "close",
+  "change",
+  "change_abs",
+  "volume",
+  "average_volume_60d_calc",
+  "average_volume_10d_calc",
+  "market_cap_basic",
+  "price_earnings_ttm",
+  "earnings_per_share_basic_ttm",
+  "price_book_fq",
+  "beta_1_year",
+  "dividend_yield_recent",
+];
 const TV_PARITY_CACHE_MS = Math.max(30_000, toNum(process.env.TV_PARITY_CACHE_MS) || 2 * 60 * 1000);
 const TV_PARITY_CHUNK_SIZE = Math.max(5, toNum(process.env.TV_PARITY_CHUNK_SIZE) || 50);
 const TV_PARITY_COLUMNS = [
@@ -240,6 +341,9 @@ const dividendCache = new Map();
 const betaCache = new Map();
 const chartSeriesCache = new Map();
 const tvParityCache = new Map();
+const tvPriceCache = new Map();
+const localPriceSnapshotCache = new Map();
+const providerBackoffUntil = { yahoo_price: 0, tv_price: 0 };
 const fundRefreshInFlight = new Set();
 const priceQueue = [];
 const fundQueue = [];
@@ -253,8 +357,54 @@ let lastFundSnapshotHealth = null;
 let lastDividendSnapshotCheckMs = 0;
 let lastDividendSnapshotMtimeMs = 0;
 let lastDividendSnapshotHealth = null;
+let lastPriceSnapshotCheckMs = 0;
+let lastPriceSnapshotMtimeMs = 0;
+let priceSnapshotDirty = false;
+let priceSnapshotFlushTimer = null;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function makeTimeoutSignal(ms) {
+  if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+    return AbortSignal.timeout(ms);
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(1, Number(ms) || 1));
+  if (typeof timer?.unref === "function") timer.unref();
+  return controller.signal;
+}
+
+function isProviderOnCooldown(name) {
+  const until = toNum(providerBackoffUntil?.[name]) || 0;
+  return until > Date.now();
+}
+
+function markProviderSuccess(name) {
+  if (!Object.prototype.hasOwnProperty.call(providerBackoffUntil, name)) return;
+  providerBackoffUntil[name] = 0;
+}
+
+function isNetworkLikeError(err) {
+  const msg = String(err?.message || err || "").toLowerCase();
+  if (!msg) return false;
+  return (
+    msg.includes("enotfound") ||
+    msg.includes("eai_again") ||
+    msg.includes("econnrefused") ||
+    msg.includes("econnreset") ||
+    msg.includes("etimedout") ||
+    msg.includes("timeout") ||
+    msg.includes("aborted") ||
+    msg.includes("network") ||
+    msg.includes("failed")
+  );
+}
+
+function markProviderFailure(name, err) {
+  if (!Object.prototype.hasOwnProperty.call(providerBackoffUntil, name)) return;
+  if (!isNetworkLikeError(err)) return;
+  providerBackoffUntil[name] = Date.now() + PRICE_PROVIDER_COOLDOWN_MS;
+}
 
 function toDdMmYyyy(date) {
   const d = new Date(date);
@@ -777,6 +927,159 @@ function reloadDividendCacheFromSnapshotIfNeeded(force = false) {
   }
 }
 
+function sanitizeLocalPriceSnapshotRecord(symbol, input) {
+  const price = pickBestNumber(toNum(input?.regularMarketPrice), toNum(input?.price));
+  if (!Number.isFinite(price) || price <= 0) return null;
+  const out = stabilizePriceFields({
+    symbol,
+    shortName: String(input?.shortName || baseSymbol(symbol)),
+    regularMarketPrice: price,
+    regularMarketPreviousClose: pickBestNumber(
+      toNum(input?.regularMarketPreviousClose),
+      toNum(input?.previousClose)
+    ),
+    regularMarketChange: pickBestNumber(toNum(input?.regularMarketChange), toNum(input?.change)),
+    regularMarketChangePercent: pickBestNumber(
+      toNum(input?.regularMarketChangePercent),
+      toNum(input?.changePercent)
+    ),
+    regularMarketOpen: toNum(input?.regularMarketOpen),
+    regularMarketDayHigh: toNum(input?.regularMarketDayHigh),
+    regularMarketDayLow: toNum(input?.regularMarketDayLow),
+    regularMarketTime: pickBestNumber(toNum(input?.regularMarketTime), toNum(input?.time), toNum(input?.ts), Date.now()),
+    regularMarketVolume: pickBestNumber(toNum(input?.regularMarketVolume), toNum(input?.volume)),
+    averageVolume: pickBestNumber(toNum(input?.averageVolume), toNum(input?.regularMarketVolume), toNum(input?.volume)),
+    marketCap: toNum(input?.marketCap),
+    trailingPE: toNum(input?.trailingPE),
+    priceToBook: toNum(input?.priceToBook),
+    trailingEps: toNum(input?.trailingEps),
+    dividendYield: toNum(input?.dividendYield),
+    beta: toNum(input?.beta),
+    _provider: "local_price_snapshot",
+    _providerTs: Date.now(),
+    _priceFallbackProvider: "local_price_snapshot",
+    _isStalePrice: true,
+  });
+  return out;
+}
+
+function reloadLocalPriceSnapshotIfNeeded(force = false) {
+  if (!PRICE_ALLOW_LOCAL_SNAPSHOT_FALLBACK) return;
+  const now = Date.now();
+  if (!force && now - lastPriceSnapshotCheckMs < PRICE_SNAPSHOT_RELOAD_MS) return;
+  lastPriceSnapshotCheckMs = now;
+
+  let stat;
+  try {
+    stat = fs.statSync(PRICE_LOCAL_SNAPSHOT_PATH);
+  } catch {
+    return;
+  }
+  if (!force && stat.mtimeMs === lastPriceSnapshotMtimeMs) return;
+
+  try {
+    const raw = fs.readFileSync(PRICE_LOCAL_SNAPSHOT_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    const data = parsed?.data || parsed?.prices || {};
+    const next = new Map();
+    for (const [k, row] of Object.entries(data)) {
+      const base = String(k || "").trim().toUpperCase();
+      if (!base) continue;
+      const symbol = normalizeSymbol(base);
+      if (!symbol) continue;
+      const sanitized = sanitizeLocalPriceSnapshotRecord(symbol, row);
+      if (!sanitized) continue;
+      next.set(symbol, { ts: Date.now(), data: sanitized });
+    }
+    localPriceSnapshotCache.clear();
+    for (const [k, v] of next) localPriceSnapshotCache.set(k, v);
+    lastPriceSnapshotMtimeMs = stat.mtimeMs;
+  } catch (err) {
+    console.warn(`[PRICE] local snapshot parse failed: ${String(err?.message || err)}`);
+  }
+}
+
+function flushLocalPriceSnapshotNow() {
+  if (!priceSnapshotDirty) return;
+  const data = {};
+  for (const [symbol, row] of localPriceSnapshotCache.entries()) {
+    const d = row?.data;
+    const price = toNum(d?.regularMarketPrice);
+    if (!Number.isFinite(price) || price <= 0) continue;
+    const base = baseSymbol(symbol);
+    data[base] = {
+      symbol,
+      shortName: d?.shortName || base,
+      regularMarketPrice: price,
+      regularMarketPreviousClose: toNum(d?.regularMarketPreviousClose),
+      regularMarketChange: toNum(d?.regularMarketChange),
+      regularMarketChangePercent: toNum(d?.regularMarketChangePercent),
+      regularMarketOpen: toNum(d?.regularMarketOpen),
+      regularMarketDayHigh: toNum(d?.regularMarketDayHigh),
+      regularMarketDayLow: toNum(d?.regularMarketDayLow),
+      regularMarketTime: pickBestNumber(toNum(d?.regularMarketTime), Date.now()),
+      regularMarketVolume: toNum(d?.regularMarketVolume),
+      averageVolume: toNum(d?.averageVolume),
+      marketCap: toNum(d?.marketCap),
+      trailingPE: toNum(d?.trailingPE),
+      priceToBook: toNum(d?.priceToBook),
+      trailingEps: toNum(d?.trailingEps),
+      dividendYield: toNum(d?.dividendYield),
+      beta: toNum(d?.beta),
+      ts: Date.now(),
+    };
+  }
+  const payload = {
+    generatedAt: new Date().toISOString(),
+    generatedAtMs: Date.now(),
+    source: "local_runtime_cache",
+    symbolCount: Object.keys(data).length,
+    data,
+  };
+  try {
+    const tmpPath = `${PRICE_LOCAL_SNAPSHOT_PATH}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), "utf8");
+    fs.renameSync(tmpPath, PRICE_LOCAL_SNAPSHOT_PATH);
+    priceSnapshotDirty = false;
+    try {
+      const stat = fs.statSync(PRICE_LOCAL_SNAPSHOT_PATH);
+      lastPriceSnapshotMtimeMs = stat.mtimeMs;
+    } catch {}
+  } catch (err) {
+    console.warn(`[PRICE] local snapshot write failed: ${String(err?.message || err)}`);
+  }
+}
+
+function scheduleLocalPriceSnapshotFlush() {
+  if (priceSnapshotFlushTimer) return;
+  priceSnapshotFlushTimer = setTimeout(() => {
+    priceSnapshotFlushTimer = null;
+    flushLocalPriceSnapshotNow();
+  }, PRICE_SNAPSHOT_PERSIST_MS);
+  if (typeof priceSnapshotFlushTimer?.unref === "function") priceSnapshotFlushTimer.unref();
+}
+
+function setLocalPriceSnapshot(symbol, quote) {
+  const sanitized = sanitizeLocalPriceSnapshotRecord(symbol, quote);
+  if (!sanitized) return;
+  localPriceSnapshotCache.set(symbol, { ts: Date.now(), data: sanitized });
+  priceSnapshotDirty = true;
+  scheduleLocalPriceSnapshotFlush();
+}
+
+function getLocalPriceSnapshot(symbol) {
+  reloadLocalPriceSnapshotIfNeeded();
+  const row = localPriceSnapshotCache.get(symbol);
+  if (!row?.data) return null;
+  return {
+    ...row.data,
+    _provider: "local_price_snapshot",
+    _providerTs: Date.now(),
+    _priceFallbackProvider: "local_price_snapshot",
+    _isStalePrice: true,
+  };
+}
+
 function buildHeaders() {
   return {
     "User-Agent": "Mozilla/5.0",
@@ -790,7 +1093,7 @@ async function fetchWithRetry(url, options = {}, retryCount = 2) {
     try {
       const res = await fetch(url, {
         ...options,
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal: makeTimeoutSignal(REQUEST_TIMEOUT_MS),
       });
       if (res.status === 429 || res.status >= 500) {
         if (attempt < retryCount) {
@@ -1056,9 +1359,15 @@ function stabilizePriceFields(quote) {
     ch = px - pc;
     cp = (ch / pc) * 100;
   } else if (Number.isFinite(cp) && Number.isFinite(px) && !Number.isFinite(ch)) {
-    ch = (cp / 100) * px;
+    if (Number.isFinite(pc) && pc !== 0) {
+      ch = (cp / 100) * pc;
+    } else if ((1 + cp / 100) !== 0) {
+      pc = px / (1 + cp / 100);
+      ch = px - pc;
+    }
   } else if (Number.isFinite(ch) && Number.isFinite(px) && !Number.isFinite(cp) && (px - ch) !== 0) {
-    cp = (ch / (px - ch)) * 100;
+    pc = px - ch;
+    cp = (ch / pc) * 100;
   }
 
   quote.regularMarketPrice = px;
@@ -1125,6 +1434,47 @@ function mapYahooFundamentalQuote(symbol, payload) {
   };
 }
 
+async function fetchTradingViewScannerChunk(baseSymbols, columns) {
+  if (!Array.isArray(baseSymbols) || !baseSymbols.length) return new Map();
+  const payload = {
+    symbols: {
+      tickers: baseSymbols.map((b) => `BIST:${b}`),
+      query: { types: [] },
+    },
+    columns,
+  };
+  const response = await fetchWithRetry(
+    TV_SCANNER_URL,
+    {
+      method: "POST",
+      headers: {
+        ...buildHeaders(),
+        "Content-Type": "application/json",
+        Origin: "https://www.tradingview.com",
+        Referer: "https://www.tradingview.com/",
+      },
+      body: JSON.stringify(payload),
+    },
+    1
+  );
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`tv_scan_${response.status}:${detail.slice(0, 180)}`);
+  }
+  const json = await response.json();
+  const rows = Array.isArray(json?.data) ? json.data : [];
+  const out = new Map();
+  for (const row of rows) {
+    const base = tvSymbolToBase(row?.s);
+    if (!base) continue;
+    const arr = Array.isArray(row?.d) ? row.d : [];
+    const raw = {};
+    for (let i = 0; i < columns.length; i++) raw[columns[i]] = arr[i];
+    out.set(base, raw);
+  }
+  return out;
+}
+
 function mapTradingViewParityFund(raw) {
   const out = {
     trailingPE: toNum(raw.price_earnings_ttm),
@@ -1159,43 +1509,9 @@ function mapTradingViewParityFund(raw) {
 }
 
 async function fetchTradingViewParityChunk(baseSymbols) {
-  if (!Array.isArray(baseSymbols) || !baseSymbols.length) return new Map();
-  const payload = {
-    symbols: {
-      tickers: baseSymbols.map((b) => `BIST:${b}`),
-      query: { types: [] },
-    },
-    columns: TV_PARITY_COLUMNS,
-  };
-  const response = await fetchWithRetry(
-    TV_SCANNER_URL,
-    {
-      method: "POST",
-      headers: {
-        ...buildHeaders(),
-        "Content-Type": "application/json",
-        Origin: "https://www.tradingview.com",
-        Referer: "https://www.tradingview.com/",
-      },
-      body: JSON.stringify(payload),
-    },
-    1
-  );
-  if (!response.ok) {
-    const detail = await response.text().catch(() => "");
-    throw new Error(`tv_scan_${response.status}:${detail.slice(0, 180)}`);
-  }
-  const json = await response.json();
-  const rows = Array.isArray(json?.data) ? json.data : [];
+  const rows = await fetchTradingViewScannerChunk(baseSymbols, TV_PARITY_COLUMNS);
   const out = new Map();
-  for (const row of rows) {
-    const base = tvSymbolToBase(row?.s);
-    if (!base) continue;
-    const arr = Array.isArray(row?.d) ? row.d : [];
-    const raw = {};
-    for (let i = 0; i < TV_PARITY_COLUMNS.length; i++) {
-      raw[TV_PARITY_COLUMNS[i]] = arr[i];
-    }
+  for (const [base, raw] of rows.entries()) {
     const mapped = mapTradingViewParityFund(raw);
     if (hasAnyFundValue(mapped)) out.set(base, mapped);
   }
@@ -1237,6 +1553,210 @@ async function getTradingViewParityForSymbols(symbols) {
     }
   }
   return out;
+}
+
+function mapTradingViewPriceRow(symbol, raw) {
+  const price = toNum(raw.close);
+  const changeAbs = toNum(raw.change_abs);
+  const changePctRaw = toNum(raw.change);
+  const volume = toNum(raw.volume);
+  const avgVol = pickBestNumber(toNum(raw.average_volume_60d_calc), toNum(raw.average_volume_10d_calc), volume);
+
+  let prevClose = null;
+  if (Number.isFinite(price) && Number.isFinite(changeAbs)) {
+    prevClose = price - changeAbs;
+  } else if (Number.isFinite(price) && Number.isFinite(changePctRaw) && (1 + changePctRaw / 100) !== 0) {
+    prevClose = price / (1 + changePctRaw / 100);
+  }
+  const change =
+    Number.isFinite(price) && Number.isFinite(prevClose)
+      ? price - prevClose
+      : Number.isFinite(changeAbs)
+      ? changeAbs
+      : null;
+  const changePct =
+    Number.isFinite(price) && Number.isFinite(prevClose) && prevClose !== 0
+      ? ((price - prevClose) / prevClose) * 100
+      : Number.isFinite(changePctRaw)
+      ? changePctRaw
+      : null;
+
+  return {
+    symbol,
+    shortName: String(raw.name || baseSymbol(symbol)).trim() || baseSymbol(symbol),
+    regularMarketPrice: price,
+    regularMarketChange: Number.isFinite(change) ? change : null,
+    regularMarketChangePercent: Number.isFinite(changePct) ? changePct : null,
+    regularMarketPreviousClose: Number.isFinite(prevClose) ? prevClose : null,
+    regularMarketOpen: null,
+    regularMarketDayHigh: null,
+    regularMarketDayLow: null,
+    regularMarketTime: Date.now(),
+    regularMarketVolume: Number.isFinite(volume) ? volume : null,
+    marketCap: toNum(raw.market_cap_basic),
+    trailingPE: toNum(raw.price_earnings_ttm),
+    forwardPE: null,
+    priceToBook: toNum(raw.price_book_fq),
+    trailingEps: toNum(raw.earnings_per_share_basic_ttm),
+    dividendYield: toUnitRatioFromPercent(raw.dividend_yield_recent),
+    returnOnEquity: null,
+    returnOnAssets: null,
+    debtToEquity: null,
+    currentRatio: null,
+    revenueGrowth: null,
+    earningsGrowth: null,
+    grossMargins: null,
+    operatingMargins: null,
+    profitMargins: null,
+    freeCashflow: null,
+    totalDebt: null,
+    totalCash: null,
+    enterpriseValue: null,
+    ebitda: null,
+    pegRatio: null,
+    fiftyTwoWeekHigh: null,
+    fiftyTwoWeekLow: null,
+    averageVolume: Number.isFinite(avgVol) ? avgVol : null,
+    priceToSalesTrailing12Months: null,
+    beta: toNum(raw.beta_1_year),
+    annualDividendPerShare: null,
+    lastDividendPerShare: null,
+    lastDividendDateMs: null,
+    dividendPayoutPct: null,
+    paidYears3y: null,
+    regularityScore: null,
+    eventCount: null,
+    events: [],
+    _provider: "tradingview_scan_price_fallback",
+    _providerTs: Date.now(),
+    _priceFallbackProvider: "tradingview_scan",
+  };
+}
+
+async function fetchTradingViewPriceChunk(baseSymbols) {
+  const rows = await fetchTradingViewScannerChunk(baseSymbols, TV_PRICE_COLUMNS);
+  const out = new Map();
+  for (const [base, raw] of rows.entries()) {
+    const symbol = normalizeSymbol(base);
+    if (!symbol) continue;
+    const mapped = mapTradingViewPriceRow(symbol, raw);
+    if (Number.isFinite(toNum(mapped.regularMarketPrice))) out.set(base, stabilizePriceFields(mapped));
+  }
+  return out;
+}
+
+async function getTradingViewPriceForSymbols(symbols) {
+  if (!PRICE_ALLOW_TV_FALLBACK) return new Map();
+  const bases = [
+    ...new Set((symbols || []).map((s) => baseSymbol(String(s || "").toUpperCase())).filter(Boolean)),
+  ];
+  const now = Date.now();
+  const out = new Map();
+  const toFetch = [];
+
+  for (const base of bases) {
+    const cached = tvPriceCache.get(base);
+    if (cached && now - cached.ts < TV_PRICE_CACHE_MS) {
+      if (cached.data) out.set(base, cached.data);
+      continue;
+    }
+    toFetch.push(base);
+  }
+  if (!toFetch.length) return out;
+  if (isProviderOnCooldown("tv_price")) return out;
+
+  const chunks = chunkArray(toFetch, TV_PRICE_CHUNK_SIZE);
+  for (const chunk of chunks) {
+    try {
+      const fetched = await enqueuePriceRequest(() => fetchTradingViewPriceChunk(chunk));
+      markProviderSuccess("tv_price");
+      const ts = Date.now();
+      for (const base of chunk) {
+        const row = fetched.get(base) || null;
+        tvPriceCache.set(base, { ts, data: row });
+        if (row) out.set(base, row);
+      }
+    } catch (err) {
+      markProviderFailure("tv_price", err);
+      console.warn(`[TV] price chunk failed (${chunk.join(",")}): ${String(err?.message || err)}`);
+      const ts = Date.now();
+      for (const base of chunk) tvPriceCache.set(base, { ts, data: null });
+    }
+  }
+  return out;
+}
+
+function buildSnapshotPriceEstimate(symbol) {
+  if (!PRICE_ALLOW_SNAPSHOT_ESTIMATE) return null;
+  const fund = getFundFromCache(symbol);
+  if (!fund) return null;
+
+  const marketCap = toNum(fund.marketCap);
+  const shares = toNum(fund.sharesOutstanding);
+  const trailingPE = toNum(fund.trailingPE);
+  const trailingEps = toNum(fund.trailingEps);
+  const priceToBook = toNum(fund.priceToBook);
+  const equity = toNum(fund.equity);
+
+  const byMcap = Number.isFinite(marketCap) && Number.isFinite(shares) && shares > 0 ? marketCap / shares : null;
+  const byPe = Number.isFinite(trailingPE) && Number.isFinite(trailingEps) ? trailingPE * trailingEps : null;
+  const byBook =
+    Number.isFinite(priceToBook) && Number.isFinite(equity) && Number.isFinite(shares) && shares > 0
+      ? priceToBook * (equity / shares)
+      : null;
+  const price = [byMcap, byPe, byBook].find((v) => Number.isFinite(v) && v > 0);
+  if (!Number.isFinite(price)) return null;
+
+  return stabilizePriceFields({
+    symbol,
+    shortName: baseSymbol(symbol),
+    regularMarketPrice: price,
+    regularMarketChange: 0,
+    regularMarketChangePercent: 0,
+    regularMarketPreviousClose: price,
+    regularMarketOpen: null,
+    regularMarketDayHigh: null,
+    regularMarketDayLow: null,
+    regularMarketTime: pickBestNumber(toNum(fund.kapDisclosureDateMs), Date.now()),
+    regularMarketVolume: null,
+    marketCap: Number.isFinite(marketCap) ? marketCap : null,
+    trailingPE: Number.isFinite(trailingPE) ? trailingPE : null,
+    forwardPE: null,
+    priceToBook: Number.isFinite(priceToBook) ? priceToBook : null,
+    trailingEps: Number.isFinite(trailingEps) ? trailingEps : null,
+    dividendYield: toNum(fund.dividendYield),
+    returnOnEquity: null,
+    returnOnAssets: null,
+    debtToEquity: null,
+    currentRatio: null,
+    revenueGrowth: null,
+    earningsGrowth: null,
+    grossMargins: null,
+    operatingMargins: null,
+    profitMargins: null,
+    freeCashflow: null,
+    totalDebt: null,
+    totalCash: null,
+    enterpriseValue: null,
+    ebitda: null,
+    pegRatio: null,
+    fiftyTwoWeekHigh: null,
+    fiftyTwoWeekLow: null,
+    averageVolume: null,
+    priceToSalesTrailing12Months: null,
+    beta: toNum(fund.beta),
+    annualDividendPerShare: null,
+    lastDividendPerShare: null,
+    lastDividendDateMs: null,
+    dividendPayoutPct: null,
+    paidYears3y: null,
+    regularityScore: null,
+    eventCount: null,
+    events: [],
+    _provider: "kap_snapshot_price_estimate",
+    _providerTs: Date.now(),
+    _priceFallbackProvider: "kap_snapshot_estimate",
+  });
 }
 
 function applyFundMetricMode(quote, symbol, metricMode, tvParityMap) {
@@ -1752,28 +2272,109 @@ function extractLatestNumericFromEvdsPayload(payload, seriesCode) {
   const up = String(seriesCode || "").toUpperCase();
   const arr = payload?.items || payload?.data || payload?.series || [];
   const rows = Array.isArray(arr) ? arr : [];
-  const candidates = [];
-  for (const row of rows) {
+  const points = [];
+
+  const dateToMs = (value) => {
+    if (value == null) return null;
+    const t = String(value).trim();
+    if (!t) return null;
+    const tr = t.replace(/[./]/g, "-");
+    let m = tr.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+    if (m) {
+      const dd = Number(m[1]);
+      const mm = Number(m[2]) - 1;
+      const yy = Number(m[3]);
+      const d = Date.UTC(yy, mm, dd);
+      return Number.isFinite(d) ? d : null;
+    }
+    m = tr.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (m) {
+      const yy = Number(m[1]);
+      const mm = Number(m[2]) - 1;
+      const dd = Number(m[3]);
+      const d = Date.UTC(yy, mm, dd);
+      return Number.isFinite(d) ? d : null;
+    }
+    m = tr.match(/^(\d{4})-(\d{2})$/);
+    if (m) {
+      const yy = Number(m[1]);
+      const mm = Number(m[2]) - 1;
+      const d = Date.UTC(yy, mm, 1);
+      return Number.isFinite(d) ? d : null;
+    }
+    if (/^\d{8}$/.test(t)) {
+      const yy = Number(t.slice(0, 4));
+      const mm = Number(t.slice(4, 6)) - 1;
+      const dd = Number(t.slice(6, 8));
+      const d = Date.UTC(yy, mm, dd);
+      return Number.isFinite(d) ? d : null;
+    }
+    if (/^\d{6}$/.test(t)) {
+      const yy = Number(t.slice(0, 4));
+      const mm = Number(t.slice(4, 6)) - 1;
+      const d = Date.UTC(yy, mm, 1);
+      return Number.isFinite(d) ? d : null;
+    }
+    const parsed = Date.parse(t);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
+  const isDateLikeKey = (k) => {
+    const x = String(k || "").toUpperCase();
+    return x.includes("TARIH") || x.includes("TARİH") || x.includes("DATE") || x.includes("DATETIME");
+  };
+
+  for (let idx = 0; idx < rows.length; idx++) {
+    const row = rows[idx];
     if (!row || typeof row !== "object") continue;
+
+    let value = null;
     for (const [k, v] of Object.entries(row)) {
       if (String(k).toUpperCase() === up || String(k).toUpperCase().endsWith(up)) {
         const n = toNum(v);
-        if (Number.isFinite(n)) candidates.push(n);
-      }
-    }
-    // Fallback: find first numeric field if series key shape differs.
-    if (!candidates.length) {
-      for (const v of Object.values(row)) {
-        const n = toNum(v);
         if (Number.isFinite(n)) {
-          candidates.push(n);
+          value = n;
           break;
         }
       }
     }
+    // Fallback: find first non-date numeric field if series key shape differs.
+    if (!Number.isFinite(value)) {
+      for (const [k, v] of Object.entries(row)) {
+        if (isDateLikeKey(k)) continue;
+        const n = toNum(v);
+        if (Number.isFinite(n)) {
+          value = n;
+          break;
+        }
+      }
+    }
+
+    if (!Number.isFinite(value)) continue;
+
+    let dateMs = null;
+    for (const [k, v] of Object.entries(row)) {
+      if (!isDateLikeKey(k)) continue;
+      dateMs = dateToMs(v);
+      if (Number.isFinite(dateMs)) break;
+    }
+    points.push({ idx, dateMs, value });
   }
-  const last = candidates.length ? candidates[candidates.length - 1] : null;
-  const prev = candidates.length > 1 ? candidates[candidates.length - 2] : null;
+
+  if (!points.length) return { last: null, prev: null };
+
+  const hasAnyDate = points.some((p) => Number.isFinite(p.dateMs));
+  if (hasAnyDate) {
+    points.sort((a, b) => {
+      const ad = Number.isFinite(a.dateMs) ? a.dateMs : Number.NEGATIVE_INFINITY;
+      const bd = Number.isFinite(b.dateMs) ? b.dateMs : Number.NEGATIVE_INFINITY;
+      if (ad === bd) return a.idx - b.idx;
+      return ad - bd;
+    });
+  }
+
+  const last = points[points.length - 1]?.value ?? null;
+  const prev = points.length > 1 ? points[points.length - 2].value : null;
   return { last, prev };
 }
 
@@ -2018,6 +2619,7 @@ function refreshFundInBackground(symbol) {
 async function getQuote(symbol, options = {}) {
   const metricMode = normalizeFundMetricMode(options?.metricMode || FUND_METRIC_MODE_DEFAULT);
   const tvParityMap = options?.tvParityMap instanceof Map ? options.tvParityMap : null;
+  const tvPriceMap = options?.tvPriceMap instanceof Map ? options.tvPriceMap : null;
   const cached = priceCache.get(symbol);
   if (cached && Date.now() - cached.ts < PRICE_CACHE_MS) {
     let fund = getFundFromCache(symbol);
@@ -2032,25 +2634,78 @@ async function getQuote(symbol, options = {}) {
     return mergedCached;
   }
 
+  if (PRICE_FORCE_LOCAL_SNAPSHOT) {
+    const localOnly = getLocalPriceSnapshot(symbol);
+    if (localOnly && Number.isFinite(toNum(localOnly.regularMarketPrice))) {
+      priceCache.set(symbol, { ts: Date.now(), data: localOnly });
+      let fund = getFundFromCache(symbol);
+      if (FUND_ALLOW_YAHOO_FUND && FUND_SYNC_TOPUP && needsFundRefresh(fund)) {
+        fund = await fetchFundNow(symbol, fund);
+      }
+      const dividend = getDividendFromCache(symbol);
+      let mergedLocal = mergeQuoteDividend(mergeQuoteFund(localOnly, fund), dividend);
+      mergedLocal = await ensureQuoteCompleteness(mergedLocal, symbol);
+      mergedLocal = applyFundMetricMode(mergedLocal, symbol, metricMode, tvParityMap);
+      refreshFundInBackground(symbol);
+      return mergedLocal;
+    }
+  }
+
   let chartQuote = null;
   let quotePrice = null;
-  try {
-    chartQuote = await enqueuePriceRequest(() => fetchChart(symbol));
-  } catch {
-    // keep trying with quote endpoint below
+  if (!isProviderOnCooldown("yahoo_price")) {
+    try {
+      chartQuote = await enqueuePriceRequest(() => fetchChart(symbol));
+      markProviderSuccess("yahoo_price");
+    } catch (err) {
+      markProviderFailure("yahoo_price", err);
+      // keep trying with quote endpoint below when provider is still healthy
+    }
   }
 
-  try {
-    quotePrice = await enqueuePriceRequest(() => fetchQuotePrice(symbol));
-  } catch {
-    // keep chart result if quote failed
+  const hasChartPrice = Number.isFinite(toNum(chartQuote?.regularMarketPrice));
+  if (!hasChartPrice && !isProviderOnCooldown("yahoo_price")) {
+    try {
+      quotePrice = await enqueuePriceRequest(() => fetchQuotePrice(symbol));
+      markProviderSuccess("yahoo_price");
+    } catch (err) {
+      markProviderFailure("yahoo_price", err);
+      // keep chart result if quote failed
+    }
   }
 
-  const quote = mergePriceSources(chartQuote, quotePrice);
+  let quote = mergePriceSources(chartQuote, quotePrice);
+  if ((!quote || !Number.isFinite(quote.regularMarketPrice)) && PRICE_ALLOW_TV_FALLBACK) {
+    const base = baseSymbol(symbol);
+    let tvPrice = tvPriceMap instanceof Map ? tvPriceMap.get(base) : null;
+    if (!tvPrice) {
+      const fetched = await getTradingViewPriceForSymbols([symbol]);
+      tvPrice = fetched.get(base) || null;
+    }
+    if (tvPrice && Number.isFinite(toNum(tvPrice.regularMarketPrice))) {
+      quote = { ...tvPrice };
+    }
+  }
+  if ((!quote || !Number.isFinite(quote.regularMarketPrice)) && PRICE_ALLOW_SNAPSHOT_ESTIMATE) {
+    const snapshotPrice = buildSnapshotPriceEstimate(symbol);
+    if (snapshotPrice && Number.isFinite(toNum(snapshotPrice.regularMarketPrice))) {
+      quote = { ...snapshotPrice };
+    }
+  }
+  if ((!quote || !Number.isFinite(quote.regularMarketPrice)) && PRICE_ALLOW_LOCAL_SNAPSHOT_FALLBACK) {
+    const localPrice = getLocalPriceSnapshot(symbol);
+    if (localPrice && Number.isFinite(toNum(localPrice.regularMarketPrice))) {
+      quote = { ...localPrice };
+    }
+  }
   if (!quote || !Number.isFinite(quote.regularMarketPrice)) {
-    throw new Error("yahoo_price_unavailable");
+    const code = PRICE_ALLOW_TV_FALLBACK
+      ? (PRICE_ALLOW_SNAPSHOT_ESTIMATE ? "price_unavailable_yahoo_tv_snapshot" : "price_unavailable_yahoo_tv")
+      : "yahoo_price_unavailable";
+    throw new Error(code);
   }
   stabilizePriceFields(quote);
+  setLocalPriceSnapshot(symbol, quote);
 
   priceCache.set(symbol, { ts: Date.now(), data: quote });
   let fund = getFundFromCache(symbol);
@@ -2103,7 +2758,7 @@ app.get("/api/rss", async (_req, res) => {
   try {
     const r = await fetch(RSS_URL, {
       headers: { "User-Agent": "Mozilla/5.0 (compatible; FKY/1.0)" },
-      signal: AbortSignal.timeout(10_000),
+      signal: makeTimeoutSignal(10_000),
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const xml = await r.text();
@@ -2126,6 +2781,13 @@ app.get("/auth/login", (_req, res) => {
 
 app.post("/auth/login", (req, res) => {
   if (!AUTH_ENABLED) return res.redirect("/");
+  const rate = getAuthRateInfo(req);
+  if (rate.blocked) {
+    res.setHeader("Retry-After", String(rate.retryAfterSec));
+    res.status(429);
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    return res.send(buildLoginPage(`Çok fazla hatalı giriş denemesi. ${rate.retryAfterSec} sn sonra tekrar deneyin.`));
+  }
   const { username = "", password = "" } = req.body || {};
   let valid = false;
   try {
@@ -2138,9 +2800,11 @@ app.post("/auth/login", (req, res) => {
     valid = uOk && pOk;
   } catch { valid = false; }
   if (valid) {
+    clearAuthLoginFailures(rate.key);
     res.setHeader("Set-Cookie", buildSessionCookie(makeSessionToken()));
     return res.redirect("/");
   }
+  recordAuthLoginFailure(rate.key);
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.send(buildLoginPage("Kullanıcı adı veya şifre hatalı."));
 });
@@ -2160,6 +2824,7 @@ app.get("/api/quotes", async (req, res) => {
     if (!symbols.length) return res.status(400).json({ error: "geçerli sembol bulunamadı" });
     const metricMode = normalizeFundMetricMode(req.query.metricMode || FUND_METRIC_MODE_DEFAULT);
     const tvParityMap = metricMode === "tv_parity" ? await getTradingViewParityForSymbols(symbols) : null;
+    const tvPriceMap = PRICE_ALLOW_TV_FALLBACK ? await getTradingViewPriceForSymbols(symbols) : null;
 
     const data = {};
     const failures = [];
@@ -2167,7 +2832,7 @@ app.get("/api/quotes", async (req, res) => {
     // Correctness-first: process sequentially to reduce provider pressure and partial failures.
     for (const symbol of symbols) {
       try {
-        const quote = await getQuote(symbol, { metricMode, tvParityMap });
+        const quote = await getQuote(symbol, { metricMode, tvParityMap, tvPriceMap });
         data[baseSymbol(symbol)] = withQualityFlags(quote);
       } catch (err) {
         failures.push({ symbol, reason: String(err?.message || err) });
@@ -2178,12 +2843,31 @@ app.get("/api/quotes", async (req, res) => {
       metricMode === "tv_parity" && tvParityMap instanceof Map
         ? symbols.map(baseSymbol).filter((b) => tvParityMap.has(b)).length
         : null;
+    const tvPriceMatched =
+      PRICE_ALLOW_TV_FALLBACK && tvPriceMap instanceof Map
+        ? symbols.map(baseSymbol).filter((b) => tvPriceMap.has(b)).length
+        : null;
+    const priceFallbackUsage = Object.values(data).reduce(
+      (acc, row) => {
+        const p = row?._priceFallbackProvider;
+        if (p === "tradingview_scan") acc.tradingview += 1;
+        if (p === "kap_snapshot_estimate") acc.snapshotEstimate += 1;
+        if (p === "local_price_snapshot") acc.localSnapshot += 1;
+        return acc;
+      },
+      { tradingview: 0, snapshotEstimate: 0, localSnapshot: 0 }
+    );
+    const providerCooldown = {
+      yahooPriceRetryInSec: Math.max(0, Math.ceil(((toNum(providerBackoffUntil.yahoo_price) || 0) - Date.now()) / 1000)),
+      tvPriceRetryInSec: Math.max(0, Math.ceil(((toNum(providerBackoffUntil.tv_price) || 0) - Date.now()) / 1000)),
+    };
+    const priceProviderBase = PRICE_FORCE_LOCAL_SNAPSHOT ? "local_snapshot_forced" : "yahoo_price";
 
     res.json({
       provider:
         metricMode === "tv_parity"
-          ? "yahoo_price+tradingview_parity+kap_dividend"
-          : "yahoo_price+kap_fund+kap_dividend",
+          ? `${priceProviderBase}${PRICE_ALLOW_TV_FALLBACK ? "+tradingview_price_fallback" : ""}${PRICE_ALLOW_SNAPSHOT_ESTIMATE ? "+snapshot_price_estimate_fallback" : ""}${PRICE_ALLOW_LOCAL_SNAPSHOT_FALLBACK ? "+local_snapshot_price_fallback" : ""}+tradingview_parity+kap_dividend`
+          : `${priceProviderBase}${PRICE_ALLOW_TV_FALLBACK ? "+tradingview_price_fallback" : ""}${PRICE_ALLOW_SNAPSHOT_ESTIMATE ? "+snapshot_price_estimate_fallback" : ""}${PRICE_ALLOW_LOCAL_SNAPSHOT_FALLBACK ? "+local_snapshot_price_fallback" : ""}+kap_fund+kap_dividend`,
       metricMode,
       metricModeDefault: FUND_METRIC_MODE_DEFAULT,
       quoteCount: Object.keys(data).length,
@@ -2196,6 +2880,17 @@ app.get("/api/quotes", async (req, res) => {
               coveragePct: symbols.length ? +(((tvMatched || 0) / symbols.length) * 100).toFixed(1) : 0,
             }
           : null,
+      tvPriceFallbackCoverage:
+        PRICE_ALLOW_TV_FALLBACK
+          ? {
+              enabled: true,
+              requestedSymbols: symbols.length,
+              matchedSymbols: tvPriceMatched || 0,
+              coveragePct: symbols.length ? +(((tvPriceMatched || 0) / symbols.length) * 100).toFixed(1) : 0,
+            }
+          : { enabled: false },
+      priceFallbackUsage,
+      providerCooldown,
       data,
       failures,
       ts: Date.now(),
@@ -2430,28 +3125,53 @@ app.get("/api/market-overview", async (_req, res) => {
 });
 
 const PORT = Number(process.env.PORT || 3000);
-const HOST = process.env.HOST ? String(process.env.HOST) : null;
+const HOST = process.env.HOST ? String(process.env.HOST) : "127.0.0.1";
+const PORT_RETRY_COUNT = Math.max(0, Math.floor(toNum(process.env.PORT_RETRY_COUNT) || 5));
 
-const server = HOST
-  ? app.listen(PORT, HOST, () => {
-      console.log(`FKY LIVE çalışıyor -> http://${HOST}:${PORT}`);
-    })
-  : app.listen(PORT, () => {
-      console.log(`FKY LIVE çalışıyor -> http://localhost:${PORT}`);
-      console.log(`Yerel erişim -> http://127.0.0.1:${PORT}`);
-    });
-
-server.on("error", (err) => {
-  if (err?.code === "EADDRINUSE") {
-    console.error(`[START] Port kullanımda: ${HOST || "0.0.0.0"}:${PORT}. Farklı port deneyin (örn. PORT=3001 npm start).`);
+function logStartUrl(port) {
+  console.log(`[START] Project root -> ${__dirname}`);
+  console.log(`[START] PID -> ${process.pid}`);
+  if (HOST) {
+    console.log(`FKY LIVE çalışıyor -> http://${HOST}:${port}`);
     return;
   }
-  if (err?.code === "EPERM") {
-    console.error(
-      `[START] Port dinleme izni yok: ${HOST || "0.0.0.0"}:${PORT}. HOST=127.0.0.1 ve farklı bir PORT (örn. 3001) denekim.`
-    );
-    return;
-  }
-  console.error("[START] Sunucu başlatma hatası:", err);
-});
+  console.log(`FKY LIVE çalışıyor -> http://localhost:${port}`);
+  console.log(`Yerel erişim -> http://127.0.0.1:${port}`);
+}
 
+function startServer(port, retriesLeft) {
+  const server = HOST
+    ? app.listen(port, HOST, () => {
+        logStartUrl(port);
+      })
+    : app.listen(port, () => {
+        logStartUrl(port);
+      });
+
+  server.on("error", (err) => {
+    if (err?.code === "EADDRINUSE") {
+      if (retriesLeft > 0) {
+        const nextPort = port + 1;
+        console.warn(
+          `[START] Port kullanımda: ${HOST || "0.0.0.0"}:${port}. Otomatik olarak ${nextPort} deneniyor...`
+        );
+        setTimeout(() => startServer(nextPort, retriesLeft - 1), 0);
+        return;
+      }
+      console.error(
+        `[START] Port kullanımda: ${HOST || "0.0.0.0"}:${port}. Otomatik deneme limiti doldu. ` +
+          `PORT=3001 npm start gibi farklı bir port deneyin.`
+      );
+      return;
+    }
+    if (err?.code === "EPERM") {
+      console.error(
+        `[START] Port dinleme izni yok: ${HOST || "0.0.0.0"}:${port}. HOST=127.0.0.1 ve farklı bir PORT (örn. 3001) deneyin.`
+      );
+      return;
+    }
+    console.error("[START] Sunucu başlatma hatası:", err);
+  });
+}
+
+startServer(PORT, PORT_RETRY_COUNT);
