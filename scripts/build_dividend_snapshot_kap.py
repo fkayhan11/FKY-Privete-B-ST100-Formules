@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import re
 import shutil
@@ -21,6 +22,11 @@ from typing import Dict, List, Optional
 import requests
 from bs4 import BeautifulSoup
 
+try:
+    from openai import OpenAI
+except Exception:
+    OpenAI = None
+
 
 ROOT = Path(__file__).resolve().parents[1]
 BIST_CONFIG = ROOT / "bist100-config.js"
@@ -31,6 +37,24 @@ HEADERS = {"Accept-Language": LANG, "Content-Type": "application/json", "User-Ag
 MIN_HTTP_INTERVAL_S = 0.35
 LAST_HTTP_TS = 0.0
 PAGE_TEXT_CACHE: Dict[int, str] = {}
+OPENAI_DIVIDEND_MODEL = os.getenv("OPENAI_DIVIDEND_MODEL", "gpt-4o-mini")
+
+DIVIDEND_LLM_SYSTEM_PROMPT = """
+You are a strict financial data extraction engine for Turkish KAP dividend disclosures.
+Extract only cash dividend information from the supplied normalized Turkish text.
+
+Return only one valid JSON object with exactly these keys:
+{"gross": number|null, "net": number|null, "paymentDate": string|null}
+
+Rules:
+- gross and net are dividend amounts per share in TRY/TL, not total dividend amounts, not percentages, not capital ratios.
+- Use decimal numbers with a dot as the decimal separator.
+- paymentDate must be the cash dividend payment date as DD.MM.YYYY when available; otherwise null.
+- Prefer explicit "brut/brüt pay başına", "net pay başına", "nakit kar payı", "hak kullanım tarihi", and "ödeme tarihi" fields.
+- Ignore bonus share/bedelsiz amounts, withholding rates, payout ratios, nominal value, total distributable profit, and total cash dividend amounts.
+- If a value is ambiguous or absent, use null. Do not guess.
+- Do not include explanations, markdown, or any keys other than gross, net, and paymentDate.
+""".strip()
 
 DIVIDEND_FIELDS = [
     "lastDividendDateMs",
@@ -417,6 +441,72 @@ def extract_payment_date_from_text(text_norm: str) -> Optional[float]:
     return all_dates[0] if all_dates else None
 
 
+def parse_llm_payment_date_ms(raw) -> Optional[float]:
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        return parse_date_ms(raw)
+    s = str(raw).strip()
+    if not s:
+        return None
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            dt = datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+            return dt.timestamp() * 1000.0
+        except Exception:
+            pass
+    parsed = parse_dates_from_text(s)
+    if parsed:
+        return parsed[0]
+    return parse_date_ms(s)
+
+
+def coerce_llm_amount(raw) -> Optional[float]:
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        val = float(raw)
+    else:
+        val = parse_tr_number(str(raw))
+        if val is None:
+            return None
+    val = abs(val)
+    return val if 0 <= val <= 500 else None
+
+
+def extract_dividend_with_llm(text_norm: str) -> dict:
+    if not text_norm:
+        return {"gross": None, "net": None, "paymentDate": None, "paymentDateMs": None}
+    if OpenAI is None:
+        raise RuntimeError("openai_package_not_available")
+
+    client = OpenAI(timeout=12.0, max_retries=0)
+    response = client.chat.completions.create(
+        model=OPENAI_DIVIDEND_MODEL,
+        temperature=0,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": DIVIDEND_LLM_SYSTEM_PROMPT},
+            {"role": "user", "content": text_norm[:12000]},
+        ],
+    )
+    content = response.choices[0].message.content or ""
+    parsed = json.loads(content)
+    if not isinstance(parsed, dict):
+        raise ValueError("llm_response_not_object")
+
+    gross = coerce_llm_amount(parsed.get("gross"))
+    net = coerce_llm_amount(parsed.get("net"))
+    payment_date = parsed.get("paymentDate")
+    payment_date_ms = parse_llm_payment_date_ms(payment_date)
+    return {
+        "gross": gross,
+        "net": net,
+        "paymentDate": str(payment_date).strip() if payment_date not in (None, "") else None,
+        "paymentDateMs": payment_date_ms,
+    }
+
+
 def extract_amounts_from_payment_rows(text_norm: str) -> Dict[str, Optional[float]]:
     if not text_norm:
         return {"gross": None, "net": None}
@@ -497,6 +587,18 @@ def extract_dividend_from_notification_page(session: requests.Session, disclosur
         text = fetch_notification_page_text(session, disclosure_index)
     except Exception:
         return {"gross": None, "net": None, "paymentDateMs": None}
+
+    try:
+        llm_info = extract_dividend_with_llm(text)
+        if any(llm_info.get(k) is not None for k in ("gross", "net", "paymentDateMs")):
+            return {
+                "gross": llm_info.get("gross"),
+                "net": llm_info.get("net"),
+                "paymentDateMs": llm_info.get("paymentDateMs"),
+            }
+    except Exception:
+        pass
+
     row_amounts = extract_amounts_from_payment_rows(text)
     generic_amounts = pick_amounts_from_text(text)
     gross = (

@@ -39,6 +39,8 @@ PREFERRED_MEMBER_TITLE_SUBSTR = {
     "GARAN": ["BANKASI"],
 }
 
+BANK_SYMBOLS = ["AKBNK", "GARAN", "ISCTR", "YKBNK", "VAKBN", "HALKB", "TSKB", "SKBNK", "ALBRK"]
+
 
 FIELDS = [
     "marketCap",
@@ -100,6 +102,10 @@ FIELDS = [
     "kapDisclosureIndex",
     "kapDisclosureYear",
     "kapDisclosureDateMs",
+]
+
+TEXT_FIELDS = [
+    "pegStatus",
 ]
 
 
@@ -180,16 +186,21 @@ def extract_disclosure_rows(payload) -> List[dict]:
     return best
 
 
-def empty_row() -> Dict[str, Optional[float]]:
-    return {k: None for k in FIELDS}
+def empty_row() -> Dict[str, object]:
+    out = {k: None for k in FIELDS}
+    for k in TEXT_FIELDS:
+        out[k] = None
+    return out
 
 
-def sanitize_existing_row(input_row: dict) -> Dict[str, Optional[float]]:
+def sanitize_existing_row(input_row: dict) -> Dict[str, object]:
     out = empty_row()
     if not isinstance(input_row, dict):
         return out
     for k in FIELDS:
         out[k] = to_num(input_row.get(k))
+    if input_row.get("pegStatus") in {"Valid", "Negative Trend"}:
+        out["pegStatus"] = input_row.get("pegStatus")
     return out
 
 
@@ -542,14 +553,57 @@ def _first_contains(tag_values: Dict[str, Tuple[Optional[float], Optional[float]
     return None, None
 
 
+def three_year_cagr(values: List[Optional[float]]) -> Optional[float]:
+    vals = [to_num(v) for v in values]
+    vals = [v for v in vals if v is not None]
+    # Expected order: [current, one_year_ago, two_years_ago, three_years_ago].
+    if len(vals) < 4:
+        return None
+    current = vals[0]
+    base = vals[3]
+    if current is None or base is None or current <= 0 or base <= 0:
+        return None
+    try:
+        return (current / base) ** (1.0 / 3.0) - 1.0
+    except Exception:
+        return None
+
+
+def calculate_peg_with_status(
+    trailing_pe: Optional[float],
+    earnings_growth_1y: Optional[float],
+    eps_history: Optional[List[Optional[float]]] = None,
+    earnings_history: Optional[List[Optional[float]]] = None,
+) -> Dict[str, object]:
+    pe = to_num(trailing_pe)
+    growth = to_num(earnings_growth_1y)
+
+    if growth is None or growth <= 0:
+        growth = three_year_cagr(eps_history or [])
+        if growth is None or growth <= 0:
+            growth = three_year_cagr(earnings_history or [])
+
+    if growth is None or growth <= 0:
+        return {"pegRatio": None, "pegStatus": "Negative Trend"}
+    if pe is None or pe <= 0:
+        return {"pegRatio": None, "pegStatus": None}
+
+    growth_pct = growth * 100.0
+    if growth_pct <= 0:
+        return {"pegRatio": None, "pegStatus": "Negative Trend"}
+    return {"pegRatio": pe / growth_pct, "pegStatus": "Valid"}
+
+
 def parse_financial_values_from_disclosure(
     session: requests.Session,
     disclosure_index: int,
     disclosure_meta: Optional[dict] = None,
+    symbol: Optional[str] = None,
 ) -> Dict[str, Optional[float]]:
     detail = get_attachment_detail(session, disclosure_index)
     body_sections = detail.get("disclosureBody") or []
     meta = extract_disclosure_meta(disclosure_meta or {"disclosureBasic": {"disclosureIndex": disclosure_index}})
+    is_bank = (symbol or "").strip().upper() in BANK_SYMBOLS
 
     # key: taxonomy row id (ifrs-full_... / kap-fr_...), value: (current_period, previous_period)
     tag_values: Dict[str, Tuple[Optional[float], Optional[float]]] = {}
@@ -585,25 +639,47 @@ def parse_financial_values_from_disclosure(
                 else:
                     tag_values[key] = (cur, prev)
 
-    revenue, revenue_prev = _first_available(
-        tag_values,
-        [
-            "ifrs-full_Revenue",
-            "ifrs-full_SalesRevenueNet",
-            "ifrs-full_RevenueFromContractsWithCustomers",
-            "ifrs-full_InterestRevenueExpense",
-            "ifrs-full_InterestRevenueCalculatedUsingEffectiveInterestMethod",
-            "ifrs-full_InterestRevenue",
-            "ifrs-full_InterestIncome",
-            "ifrs-full_NetInterestIncome",
-        ],
-    )
-    if revenue is None:
-        revenue, revenue_prev = _first_contains(tag_values, ["revenue"])
-    if revenue is None:
-        revenue, revenue_prev = _first_contains(tag_values, ["sales"])
-    if revenue is None:
-        revenue, revenue_prev = _first_contains(tag_values, ["interest", "income"])
+    if is_bank:
+        revenue, revenue_prev = _first_available(
+            tag_values,
+            [
+                "kap-fr_NetInterestIncome",
+                "ifrs-full_NetInterestIncome",
+                "kap-fr_NetInterestIncomeExpense",
+                "ifrs-full_InterestRevenueExpense",
+                "ifrs-full_InterestRevenueCalculatedUsingEffectiveInterestMethod",
+                "ifrs-full_InterestIncome",
+                "kap-fr_TotalOperatingIncome",
+                "kap-fr_TotalIncomeFromOperatingActivities",
+                "kap-fr_OperatingIncome",
+            ],
+        )
+        if revenue is None:
+            revenue, revenue_prev = _first_contains(tag_values, ["net", "interest", "income"])
+        if revenue is None:
+            revenue, revenue_prev = _first_contains(tag_values, ["total", "operating", "income"])
+        if revenue is None:
+            revenue, revenue_prev = _first_contains(tag_values, ["operating", "income"])
+    else:
+        revenue, revenue_prev = _first_available(
+            tag_values,
+            [
+                "ifrs-full_Revenue",
+                "ifrs-full_SalesRevenueNet",
+                "ifrs-full_RevenueFromContractsWithCustomers",
+                "ifrs-full_InterestRevenueExpense",
+                "ifrs-full_InterestRevenueCalculatedUsingEffectiveInterestMethod",
+                "ifrs-full_InterestRevenue",
+                "ifrs-full_InterestIncome",
+                "ifrs-full_NetInterestIncome",
+            ],
+        )
+        if revenue is None:
+            revenue, revenue_prev = _first_contains(tag_values, ["revenue"])
+        if revenue is None:
+            revenue, revenue_prev = _first_contains(tag_values, ["sales"])
+        if revenue is None:
+            revenue, revenue_prev = _first_contains(tag_values, ["interest", "income"])
     net_income, net_income_prev = _first_available(
         tag_values,
         [
@@ -639,14 +715,17 @@ def parse_financial_values_from_disclosure(
         eql, _ = _first_available(tag_values, ["ifrs-full_EquityAndLiabilities"])
         if eql is not None and equity is not None:
             total_liabilities = eql - equity
-    gross_profit, _ = _first_available(
-        tag_values,
-        [
-            "ifrs-full_GrossProfit",
-            "ifrs-full_GrossProfitLoss",
-            "kap-fr_GrossProfitLossFromOperatingActivitiesForBankingSector",
-        ],
-    )
+    if is_bank:
+        gross_profit = None
+    else:
+        gross_profit, _ = _first_available(
+            tag_values,
+            [
+                "ifrs-full_GrossProfit",
+                "ifrs-full_GrossProfitLoss",
+                "kap-fr_GrossProfitLossFromOperatingActivitiesForBankingSector",
+            ],
+        )
     operating_profit, _ = _first_available(
         tag_values,
         [
@@ -662,16 +741,19 @@ def parse_financial_values_from_disclosure(
             "ifrs-full_CashAndCashEquivalentsForCashFlowStatement",
         ],
     )
-    ebitda, _ = _first_available(
-        tag_values,
-        [
-            "ifrs-full_EarningsBeforeInterestTaxesDepreciationAndAmortisation",
-            "ifrs-full_EarningsBeforeInterestTaxDepreciationAmortization",
-            "kap-fr_Ebitda",
-        ],
-    )
-    if ebitda is None:
-        ebitda, _ = _first_contains(tag_values, ["ebitda"])
+    if is_bank:
+        ebitda = None
+    else:
+        ebitda, _ = _first_available(
+            tag_values,
+            [
+                "ifrs-full_EarningsBeforeInterestTaxesDepreciationAndAmortisation",
+                "ifrs-full_EarningsBeforeInterestTaxDepreciationAmortization",
+                "kap-fr_Ebitda",
+            ],
+        )
+        if ebitda is None:
+            ebitda, _ = _first_contains(tag_values, ["ebitda"])
 
     depreciation_amortization, _ = _first_available(
         tag_values,
@@ -688,7 +770,7 @@ def parse_financial_values_from_disclosure(
         depreciation_amortization, _ = _first_contains(tag_values, ["amortisation"])
     if depreciation_amortization is None:
         depreciation_amortization, _ = _first_contains(tag_values, ["amortization"])
-    if ebitda is None and operating_profit is not None and depreciation_amortization is not None:
+    if not is_bank and ebitda is None and operating_profit is not None and depreciation_amortization is not None:
         ebitda = operating_profit + abs(depreciation_amortization)
 
     current_borrowings, _ = _first_available(
@@ -863,7 +945,7 @@ def parse_financial_values_from_disclosure(
         out["returnOnAssets"] = net_income / assets
     if net_income is not None and revenue not in (None, 0):
         out["profitMargins"] = net_income / revenue
-    if gross_profit is not None and revenue not in (None, 0):
+    if not is_bank and gross_profit is not None and revenue not in (None, 0):
         out["grossMargins"] = gross_profit / revenue
     if operating_profit is not None and revenue not in (None, 0):
         out["operatingMargins"] = operating_profit / revenue
@@ -878,13 +960,21 @@ def parse_financial_values_from_disclosure(
         out["earningsGrowth"] = (net_income - net_income_prev) / abs(net_income_prev)
     if eps_basic is not None and eps_basic_prev not in (None, 0):
         out["epsGrowth"] = (eps_basic - eps_basic_prev) / abs(eps_basic_prev)
+    peg_info = calculate_peg_with_status(
+        out.get("trailingPE"),
+        out.get("earningsGrowth"),
+        eps_history=[eps_basic, eps_basic_prev],
+        earnings_history=[net_income, net_income_prev],
+    )
+    out["pegRatio"] = peg_info["pegRatio"]
+    out["pegStatus"] = peg_info["pegStatus"]
     if revenue not in (None, 0) and assets not in (None, 0):
         out["assetTurnover"] = revenue / assets
     if current_assets is not None and short_liabilities not in (None, 0):
         inv = inventories or 0.0
         out["quickRatio"] = (current_assets - inv) / short_liabilities
     debt_for_nd = borrowings_total if borrowings_total is not None else total_liabilities
-    if debt_for_nd is not None and ebitda not in (None, 0):
+    if not is_bank and debt_for_nd is not None and ebitda not in (None, 0):
         out["netDebtToEbitda"] = (debt_for_nd - (total_cash or 0.0)) / ebitda
     if operating_profit is not None and interest_expense not in (None, 0):
         out["interestCoverage"] = operating_profit / abs(interest_expense)
@@ -985,7 +1075,7 @@ def build_snapshot(
                 c_idx = (cand.get("disclosureBasic") or {}).get("disclosureIndex")
                 if not c_idx:
                     continue
-                vals = parse_financial_values_from_disclosure(sess, int(c_idx), cand)
+                vals = parse_financial_values_from_disclosure(sess, int(c_idx), cand, symbol=symbol)
                 filled = sum(1 for k in FIELDS if vals.get(k) is not None)
                 if filled > best_filled:
                     best_vals = vals
