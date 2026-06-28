@@ -1,0 +1,514 @@
+{
+  "generatedAt": "2026-06-28T20:19:10.476044+00:00",
+  "generatedAtMs": 1782677950476,
+  "symbolCount": 100,
+  "metricCount": 23,
+  "missingSourceTotal": 626,
+  "statusCounts": {
+    "Valid": 1674,
+    "Provider Estimate": 0,
+    "Model Estimate": 0
+  },
+  "worstMetrics": [
+    {
+      "metric": "forwardPE",
+      "coveragePct": 0.0,
+      "missingSourceCount": 100,
+      "statusCounts": {
+        "Valid": 0,
+        "Missing": 100
+      },
+      "missingSourceSymbols": [
+        "AEFES",
+        "AGHOL",
+        "AKBNK",
+        "AKSA",
+        "AKSEN",
+        "ALARK",
+        "ALTNY",
+        "ANSGR",
+        "ARCLK",
+        "ASELS",
+        "ASTOR",
+        "BALSU",
+        "BIMAS",
+        "BRSAN",
+        "BRYAT"
+      ]
+    },
+    {
+      "metric": "dividendYield",
+      "coveragePct": 0.0,
+      "missingSourceCount": 100,
+      "statusCounts": {
+        "Valid": 0,
+        "Missing": 100
+      },
+      "missingSourceSymbols": [
+        "AEFES",
+        "AGHOL",
+        "AKBNK",
+        "AKSA",
+        "AKSEN",
+        "ALARK",
+        "ALTNY",
+        "ANSGR",
+        "ARCLK",
+        "ASELS",
+        "ASTOR",
+        "BALSU",
+        "BIMAS",
+        "BRSAN",
+        "BRYAT"
+      ]
+    },
+    {
+      "metric": "enterpriseValue",
+      "coveragePct": 0.0,
+      "missingSourceCount": 100,
+      "statusCounts": {
+        "Valid": 0,
+        "Missing": 100
+      },
+      "missingSourceSymbols": [
+        "AEFES",
+        "AGHOL",
+        "AKBNK",
+        "AKSA",
+        "AKSEN",
+        "ALARK",
+        "ALTNY",
+        "ANSGR",
+        "ARCLK",
+        "ASELS",
+        "ASTOR",
+        "BALSU",
+        "BIMAS",
+        "BRSAN",
+        "BRYAT"
+      ]
+    },
+    {
+      "metric": "beta",
+      "coveragePct": 0.0,
+      "missingSourceCount": 100,
+      "statusCounts": {
+        "Valid": 0,
+        "Missing": 100
+      },
+      "missingSourceSymbols": [
+        "AEFES",
+        "AGHOL",
+        "AKBNK",
+        "AKSA",
+        "AKSEN",
+        "ALARK",
+        "ALTNY",
+        "ANSGR",
+        "ARCLK",
+        "ASELS",
+        "ASTOR",
+        "BALSU",
+        "BIMAS",
+        "BRSAN",
+        "BRYAT"
+      ]
+    },
+    {
+      "metric": "priceToSalesTrailing12Months",
+      "coveragePct": 0.0,
+      "missingSourceCount": 100,
+      "statusCounts": {
+        "Valid": 0,
+        "Missing": 100
+      },
+      "missingSourceSymbols": [
+        "AEFES",
+        "AGHOL",
+        "AKBNK",
+        "AKSA",
+        "AKSEN",
+        "ALARK",
+        "ALTNY",
+        "ANSGR",
+        "ARCLK",
+        "ASELS",
+        "ASTOR",
+        "BALSU",
+        "BIMAS",
+        "BRSAN",
+        "BRYAT"
+      ]
+    },
+    {
+      "metric": "pegRatio",
+      "coveragePct": 56.0,
+      "missingSourceCount": 44,
+      "statusCounts": {
+        "Valid": 56,
+        "Missing": 44
+      },
+      "missingSourceSymbols": [
+        "AEFES",
+        "AGHOL",
+        "ALARK",
+        "ARCLK",
+        "BSOKE",
+        "BTCIM",
+        "CANTE",
+        "CCOLA",
+        "CIMSA",
+        "CVKMD",
+        "DAPGM",
+        "DOAS",
+        "EFOR",
+        "EGEEN",
+        "EKGYO"
+      ]
+    },
+    {
+      "metric": "trailingPE",
+      "coveragePct": 80.0,
+      "missingSourceCount": 20,
+      "statusCounts": {
+        "Valid": 80,
+        "Missing": 20
+      },
+      "missingSourceSymbols": [
+        "ALARK",
+        "ARCLK",
+        "BTCIM",
+        "CANTE",
+        "GUBRF",
+        "HEKTS",
+        "IZENR",
+        "KONTR",
+        "KRDMD",
+        "OBAMS",
+        "ODAS",
+        "OTKAR",
+        "PETKM",
+        "QUAGR",
+        "REEDR"
+      ]
+    },
+    {
+      "metric": "ebitda",
+      "coveragePct": 88.0,
+      "missingSourceCount": 12,
+      "statusCounts": {
+        "Valid": 88,
+        "Missing": 12
+      },
+      "missingSourceSymbols": [
+        "AKBNK",
+        "ANSGR",
+        "BRYAT",
+        "DSTKF",
+        "GARAN",
+        "HALKB",
+        "ISCTR",
+        "KTLEV",
+        "SKBNK",
+        "TURSG",
+        "VAKBN",
+        "YKBNK"
+      ]
+    },
+    {
+      "metric": "operatingMargins",
+      "coveragePct": 90.0,
+      "missingSourceCount": 10,
+      "statusCounts": {
+        "Valid": 90,
+        "Missing": 10
+      },
+      "missingSourceSymbols": [
+        "AKBNK",
+        "ANSGR",
+        "DSTKF",
+        "HALKB",
+        "ISCTR",
+        "KTLEV",
+        "SKBNK",
+        "TURSG",
+        "VAKBN",
+        "YKBNK"
+      ]
+    },
+    {
+      "metric": "freeCashflow",
+      "coveragePct": 90.0,
+      "missingSourceCount": 10,
+      "statusCounts": {
+        "Valid": 90,
+        "Missing": 10
+      },
+      "missingSourceSymbols": [
+        "AKBNK",
+        "ANSGR",
+        "BRYAT",
+        "GARAN",
+        "HALKB",
+        "ISCTR",
+        "SKBNK",
+        "TURSG",
+        "VAKBN",
+        "YKBNK"
+      ]
+    }
+  ],
+  "worstSymbols": [
+    {
+      "symbol": "SKBNK.IS",
+      "qualityScore": 43,
+      "missingSourceCount": 13,
+      "estimatedCount": 0,
+      "missingSourceMetrics": [
+        "forwardPE",
+        "dividendYield",
+        "currentRatio",
+        "revenueGrowth",
+        "grossMargins",
+        "operatingMargins",
+        "profitMargins",
+        "freeCashflow",
+        "enterpriseValue",
+        "ebitda"
+      ]
+    },
+    {
+      "symbol": "AKBNK.IS",
+      "qualityScore": 47,
+      "missingSourceCount": 12,
+      "estimatedCount": 0,
+      "missingSourceMetrics": [
+        "forwardPE",
+        "dividendYield",
+        "currentRatio",
+        "revenueGrowth",
+        "grossMargins",
+        "operatingMargins",
+        "profitMargins",
+        "freeCashflow",
+        "enterpriseValue",
+        "ebitda"
+      ]
+    },
+    {
+      "symbol": "HALKB.IS",
+      "qualityScore": 47,
+      "missingSourceCount": 12,
+      "estimatedCount": 0,
+      "missingSourceMetrics": [
+        "forwardPE",
+        "dividendYield",
+        "currentRatio",
+        "revenueGrowth",
+        "grossMargins",
+        "operatingMargins",
+        "profitMargins",
+        "freeCashflow",
+        "enterpriseValue",
+        "ebitda"
+      ]
+    },
+    {
+      "symbol": "ISCTR.IS",
+      "qualityScore": 47,
+      "missingSourceCount": 12,
+      "estimatedCount": 0,
+      "missingSourceMetrics": [
+        "forwardPE",
+        "dividendYield",
+        "currentRatio",
+        "revenueGrowth",
+        "grossMargins",
+        "operatingMargins",
+        "profitMargins",
+        "freeCashflow",
+        "enterpriseValue",
+        "ebitda"
+      ]
+    },
+    {
+      "symbol": "VAKBN.IS",
+      "qualityScore": 47,
+      "missingSourceCount": 12,
+      "estimatedCount": 0,
+      "missingSourceMetrics": [
+        "forwardPE",
+        "dividendYield",
+        "currentRatio",
+        "revenueGrowth",
+        "grossMargins",
+        "operatingMargins",
+        "profitMargins",
+        "freeCashflow",
+        "enterpriseValue",
+        "ebitda"
+      ]
+    },
+    {
+      "symbol": "YKBNK.IS",
+      "qualityScore": 47,
+      "missingSourceCount": 12,
+      "estimatedCount": 0,
+      "missingSourceMetrics": [
+        "forwardPE",
+        "dividendYield",
+        "currentRatio",
+        "revenueGrowth",
+        "grossMargins",
+        "operatingMargins",
+        "profitMargins",
+        "freeCashflow",
+        "enterpriseValue",
+        "ebitda"
+      ]
+    },
+    {
+      "symbol": "ANSGR.IS",
+      "qualityScore": 60,
+      "missingSourceCount": 9,
+      "estimatedCount": 0,
+      "missingSourceMetrics": [
+        "forwardPE",
+        "dividendYield",
+        "grossMargins",
+        "operatingMargins",
+        "freeCashflow",
+        "enterpriseValue",
+        "ebitda",
+        "beta",
+        "priceToSalesTrailing12Months"
+      ]
+    },
+    {
+      "symbol": "TURSG.IS",
+      "qualityScore": 60,
+      "missingSourceCount": 9,
+      "estimatedCount": 0,
+      "missingSourceMetrics": [
+        "forwardPE",
+        "dividendYield",
+        "grossMargins",
+        "operatingMargins",
+        "freeCashflow",
+        "enterpriseValue",
+        "ebitda",
+        "beta",
+        "priceToSalesTrailing12Months"
+      ]
+    },
+    {
+      "symbol": "DSTKF.IS",
+      "qualityScore": 65,
+      "missingSourceCount": 8,
+      "estimatedCount": 0,
+      "missingSourceMetrics": [
+        "forwardPE",
+        "dividendYield",
+        "currentRatio",
+        "operatingMargins",
+        "enterpriseValue",
+        "ebitda",
+        "beta",
+        "priceToSalesTrailing12Months"
+      ]
+    },
+    {
+      "symbol": "GARAN.IS",
+      "qualityScore": 65,
+      "missingSourceCount": 8,
+      "estimatedCount": 0,
+      "missingSourceMetrics": [
+        "forwardPE",
+        "dividendYield",
+        "currentRatio",
+        "freeCashflow",
+        "enterpriseValue",
+        "ebitda",
+        "beta",
+        "priceToSalesTrailing12Months"
+      ]
+    },
+    {
+      "symbol": "KTLEV.IS",
+      "qualityScore": 65,
+      "missingSourceCount": 8,
+      "estimatedCount": 0,
+      "missingSourceMetrics": [
+        "forwardPE",
+        "dividendYield",
+        "currentRatio",
+        "operatingMargins",
+        "enterpriseValue",
+        "ebitda",
+        "beta",
+        "priceToSalesTrailing12Months"
+      ]
+    },
+    {
+      "symbol": "ALARK.IS",
+      "qualityScore": 69,
+      "missingSourceCount": 7,
+      "estimatedCount": 0,
+      "missingSourceMetrics": [
+        "trailingPE",
+        "forwardPE",
+        "dividendYield",
+        "enterpriseValue",
+        "pegRatio",
+        "beta",
+        "priceToSalesTrailing12Months"
+      ]
+    },
+    {
+      "symbol": "ARCLK.IS",
+      "qualityScore": 69,
+      "missingSourceCount": 7,
+      "estimatedCount": 0,
+      "missingSourceMetrics": [
+        "trailingPE",
+        "forwardPE",
+        "dividendYield",
+        "enterpriseValue",
+        "pegRatio",
+        "beta",
+        "priceToSalesTrailing12Months"
+      ]
+    },
+    {
+      "symbol": "BRYAT.IS",
+      "qualityScore": 69,
+      "missingSourceCount": 7,
+      "estimatedCount": 0,
+      "missingSourceMetrics": [
+        "forwardPE",
+        "dividendYield",
+        "freeCashflow",
+        "enterpriseValue",
+        "ebitda",
+        "beta",
+        "priceToSalesTrailing12Months"
+      ]
+    },
+    {
+      "symbol": "BTCIM.IS",
+      "qualityScore": 69,
+      "missingSourceCount": 7,
+      "estimatedCount": 0,
+      "missingSourceMetrics": [
+        "trailingPE",
+        "forwardPE",
+        "dividendYield",
+        "enterpriseValue",
+        "pegRatio",
+        "beta",
+        "priceToSalesTrailing12Months"
+      ]
+    }
+  ],
+  "disclaimer": "Veri kalitesi ve eksik metrik oranları KAP ve yfinance kaynaklarının doluluk denetimidir."
+}

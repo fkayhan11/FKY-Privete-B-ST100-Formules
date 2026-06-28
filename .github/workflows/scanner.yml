@@ -1,0 +1,48 @@
+name: Nightly BIST 100 Scanner
+
+on:
+  schedule:
+    # Runs Monday through Friday at 16:00 UTC (19:00 Turkish time, after BIST market closes)
+    - cron: '0 16 * * 1-5'
+  workflow_dispatch: # Allows manual trigger from the GitHub Actions dashboard
+
+jobs:
+  run-scanner:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-size: '3.11'
+          cache: 'pip' # cache pip dependencies
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas yfinance
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Node Dependencies
+        run: |
+          npm install pg
+
+      - name: Execute Nightly Scanner
+        run: |
+          # Runs the scan which writes data/signals.json and data/scanner_positions.json
+          python3 bist_terminal/nightly_scanner.py
+
+      - name: Sync Results to Supabase Database
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          # Seeds the newly computed signals and positions directly into Supabase Postgres
+          node bist_terminal/scripts/migrate_to_supabase.js
